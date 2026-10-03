@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>バーコードスキャナー</title>
+  <!-- Tailwind CSS & html5-qrcode CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <style>
+    body {
+      background-color: #0f172a;
+      color: #f8fafc;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      touch-action: manipulation;
+    }
+    
+    .guide-box {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 80%;
+      height: 45%;
+      border: 2px solid #38bdf8;
+      border-radius: 12px;
+      box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.7);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .laser {
+      position: absolute;
+      top: 50%;
+      left: 5%;
+      width: 90%;
+      height: 2px;
+      background: #ef4444;
+      box-shadow: 0 0 8px #ef4444;
+      animation: scan 1.8s infinite ease-in-out;
+    }
+
+    @keyframes scan {
+      0%, 100% { top: 15%; }
+      50% { top: 85%; }
+    }
+
+    #reader {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    #reader video {
+      width: 100% !important;
+      height: 100% !important;
+      object-fit: cover !important;
+      border-radius: 12px;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between p-4 select-none">
+
+  <header class="text-center space-y-1">
+    <div class="flex items-center justify-center gap-2 text-sky-400 font-bold text-base">
+      <i class="fa-solid fa-barcode text-lg"></i>
+      <span>バーコードスキャナー</span>
+    </div>
+    <p class="text-xs text-slate-400">枠線内にバーコードを合わせてください</p>
+    <div id="mode-badge" class="inline-block px-3 py-1 rounded-full text-[11px] bg-slate-800 text-slate-300 font-medium mt-1">
+      <i class="fa-solid fa-hand-pointer text-amber-400 mr-1"></i> 「カメラを起動」ボタンを押してください
+    </div>
+  </header>
+
+  <main class="flex-1 flex flex-col items-center justify-center my-2">
+    <div class="w-full max-w-sm aspect-[4/3] relative rounded-2xl overflow-hidden bg-slate-800 shadow-2xl border border-slate-700/50">
+      
+      <!-- html5-qrcode スキャナー表示領域 -->
+      <div id="reader"></div>
+
+      <!-- スキャンガイド枠＆レーザーアニメーション -->
+      <div id="guide-layer" class="guide-box hidden">
+        <div class="laser"></div>
+      </div>
+
+      <!-- ユーザー操作（User Gesture）による起動オーバーレイ -->
+      <div id="start-overlay" class="absolute inset-0 p-4 bg-slate-900/90 flex flex-col items-center justify-center text-center space-y-3 z-20">
+        <div class="w-14 h-14 bg-sky-500/20 text-sky-400 rounded-full flex items-center justify-center text-2xl mb-1">
+          <i class="fa-solid fa-camera"></i>
+        </div>
+        <p id="status-text" class="text-xs text-slate-300 max-w-[240px]">
+          「カメラを起動する」ボタンを押すとバーコード読み取りを開始します
+        </p>
+        
+        <!-- 明示的なタップによるカメラ起動ボタン -->
+        <button id="start-cam-btn" onclick="initScanner()" class="px-6 py-3 bg-sky-500 hover:bg-sky-400 active:scale-95 text-white font-bold rounded-xl text-sm transition shadow-lg flex items-center gap-2">
+          <i class="fa-solid fa-video"></i> カメラを起動する
+        </button>
+
+        <!-- フォールバック: 写真撮影 / 画像選択 -->
+        <div class="pt-3 border-t border-slate-800/80 w-full text-[11px] text-slate-400 space-y-2">
+          <p class="text-slate-400">カメラが動作しない場合:</p>
+          <label class="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 rounded-xl cursor-pointer font-medium text-xs border border-slate-700 shadow-sm transition">
+            <i class="fa-solid fa-image text-sky-400"></i> 写真を撮影 / 画像から読み取り
+            <input type="file" id="qr-input-file" accept="image/*" capture="environment" class="hidden" onchange="scanFromFile(event)">
+          </label>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <footer class="space-y-2 text-center pt-2">
+    <button onclick="stopAndClose()" class="w-full max-w-sm py-3 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 font-bold rounded-xl text-sm transition border border-slate-700 shadow-lg">
+      <i class="fa-solid fa-xmark mr-1"></i> 閉じる
+    </button>
+  </footer>
+
+  <script>
+    let isScanning = false;
+    let html5QrCode = null;
+
+    // URLのクエリパラメータから対象の入力欄IDを取得
+    const urlParams = new URLSearchParams(window.location.search);
+    const targetInputId = urlParams.get('target') || '';
+
+    async function scanFromFile(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+
+      if (!html5QrCode) {
+        html5QrCode = new Html5Qrcode("reader");
+      }
+
+      try {
+        const decodedText = await html5QrCode.scanFile(file, true);
+        notifyResult(decodedText);
+      } catch (err) {
+        alert("画像からバーコードを検出できませんでした。ピントを合わせて再度撮影してください。");
+      }
+    }
+
+    function notifyResult(barcode) {
+      const payload = {
+        type: 'BARCODE_SCANNED',
+        barcode: barcode,
+        targetInputId: targetInputId
+      };
+
+      // 1. window.opener (ポップアップ表示の場合)
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage(payload, '*');
+      } 
+      // 2. window.parent (iframe組み込みの場合)
+      else if (window.parent && window.parent !== window) {
+        window.parent.postMessage(payload, '*');
+      }
+
+      stopAndClose();
+    }
+
+    async function stopAndClose() {
+      if (html5QrCode) {
+        try {
+          if (html5QrCode.isScanning) {
+            await html5QrCode.stop();
+          }
+        } catch (e) {
+          console.warn('html5QrCode stop error:', e);
+        }
+      }
+      window.close();
+    }
+
+    async function initScanner() {
+      if (isScanning) return;
+
+      const overlay = document.getElementById('start-overlay');
+      const guideLayer = document.getElementById('guide-layer');
+      const badge = document.getElementById('mode-badge');
+
+      badge.innerHTML = '<i class="fa-solid fa-circle-dot text-emerald-400 mr-1 animate-pulse"></i> カメラ初期化中...';
+
+      if (!html5QrCode) {
+        html5QrCode = new Html5Qrcode("reader");
+      }
+
+      const config = {
+        fps: 15,
+        qrbox: (viewfinderWidth, viewfinderHeight) => {
+          const width = Math.floor(viewfinderWidth * 0.85);
+          const height = Math.floor(width * 0.45);
+          return { width: width, height: height };
+        },
+        aspectRatio: 1.0
+      };
+
+      try {
+        await html5QrCode.start(
+          { facingMode: "environment" },
+          config,
+          (decodedText, decodedResult) => {
+            notifyResult(decodedText);
+          },
+          (errorMessage) => {
+            // スキャン中の継続判定フレームエラーは無視
+          }
+        );
+
+        isScanning = true;
+        overlay.classList.add('hidden');
+        guideLayer.classList.remove('hidden');
+        badge.innerHTML = '<i class="fa-solid fa-circle-dot text-emerald-400 mr-1 animate-pulse"></i> スキャン中';
+
+      } catch (err) {
+        console.error("html5-qrcode start failed:", err);
+        isScanning = false;
+        overlay.classList.remove('hidden');
+        guideLayer.classList.add('hidden');
+        
+        const statusText = document.getElementById('status-text');
+        if (err && (err.name === 'NotAllowedError' || String(err).includes('NotAllowedError') || String(err).includes('Permission'))) {
+          statusText.innerText = "カメラの使用許可が拒否されました。ブラウザ設定でカメラを「許可」にしてから、再度「カメラを起動する」を押してください。";
+        } else {
+          statusText.innerText = "カメラの起動に失敗しました。下の「写真を撮影」ボタンから写真を撮って読み込むこともできます。";
+        }
+        badge.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-amber-400 mr-1"></i> カメラ起動エラー';
+      }
+    }
+
+    window.addEventListener('load', () => {
+      // 自動試行も行いますが、タップ操作用ボタンを標準表示にして起動を確実にします
+      initScanner();
+    });
+  </script>
+</body>
+</html>
